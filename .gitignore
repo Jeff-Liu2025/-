@@ -1,0 +1,11 @@
+# 原始题库数据源
+抓取题库*.js
+近代史题库.json
+题目.txt
+
+# 工作目录缓存
+.workbuddy/
+
+# 系统文件
+Thumbs.db
+.DS_Store
