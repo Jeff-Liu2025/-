@@ -343,8 +343,8 @@ label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 
   border-radius: var(--radius-xl);
   padding: 20px;
   margin-bottom: 12px;
-  animation: cardIn 0.3s ease;
 }
+.q-card.animate { animation: cardIn 0.3s ease; }
 @keyframes cardIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
 
 .q-card .meta { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; align-items: center; }
@@ -364,12 +364,16 @@ label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
   cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.4,0,0.2,1);
+  transition: background 0.15s, border-color 0.15s;
   background: rgba(255,255,255,0.02);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
-.q-card .option:hover {
-  border-color: rgba(0,212,255,0.3);
-  background: var(--cyan-dim);
+@media (hover: hover) {
+  .q-card .option:hover {
+    border-color: rgba(0,212,255,0.3);
+    background: var(--cyan-dim);
+  }
 }
 .q-card .option .olabel {
   width: 28px;
@@ -722,6 +726,7 @@ const App = {
   quizState: { mode: 'all', questions: [], idx: 0, answered: false, selected: null,
     isCorrect: false, sessionStats: { correct: 0, wrong: 0, total: 0 }, startOpts: {} },
   _gridFilter: 'all',
+  _animId: 0, // increment to break stale animation locks
 
   // 过滤 HTML 标签
   sanitize(text) {
@@ -1118,7 +1123,7 @@ const App = {
       </div>
       <div class="progress-bar"><div class="fill" style="width:${(s.idx+1)/s.sessionStats.total*100}%"></div></div>
 
-      <div class="q-card">
+      <div class="q-card" id="qCardMain">
         <div class="meta">
           <span class="badge ${typeBadge}">${s.mode === 'review' ? '📖' : ''}${q.题型}</span>
           <span class="badge" style="background:var(--card2);color:var(--text2)">第${q.序号}题</span>
@@ -1189,6 +1194,30 @@ const App = {
         <div class="ai-content" id="aiContent"></div>
       </div>
     `;
+
+    // 惯性动画：新题目才播放cardIn
+    const qCard = document.getElementById('qCardMain');
+    if (qCard && !qCard.dataset.rendered) {
+      qCard.classList.add('animate');
+      qCard.dataset.rendered = '1';
+    }
+
+    // 左右滑动手势
+    const appEl = document.getElementById('app');
+    let touchStartX = 0, touchStartY = 0;
+    appEl.ontouchstart = (e) => {
+      touchStartX = e.changedTouches[0].screenX;
+      touchStartY = e.changedTouches[0].screenY;
+    };
+    appEl.ontouchend = (e) => {
+      const dx = e.changedTouches[0].screenX - touchStartX;
+      const dy = e.changedTouches[0].screenY - touchStartY;
+      const s = App.quizState;
+      if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+        if (dx < 0 && s.answered) App.nextQuestion();
+        else if (dx > 0 && s.idx > 0) App.prevQuestion();
+      }
+    };
   },
 
   selectOption(label) {
@@ -1308,7 +1337,7 @@ const App = {
     const s = this.quizState;
     document.getElementById('aiBox')?.classList.remove('show');
     if (s.idx < s.questions.length - 1) {
-      s.idx++;
+      s.idx++; document.getElementById('qCardMain')?.removeAttribute('data-rendered');
       if (s.mode === 'review') {
         s.answered = true; s.selected = null;
       } else {
@@ -1328,7 +1357,7 @@ const App = {
     const s = this.quizState;
     document.getElementById('aiBox')?.classList.remove('show');
     if (s.idx <= 0) return;
-    s.idx--;
+    s.idx--; document.getElementById('qCardMain')?.removeAttribute('data-rendered');
     // 已答题回顾：显示正确答案
     s.answered = true; s.selected = null;
     this.renderQuiz();
