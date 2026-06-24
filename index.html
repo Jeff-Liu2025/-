@@ -344,9 +344,6 @@ label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 
   padding: 20px;
   margin-bottom: 12px;
 }
-.q-card.animate { animation: cardIn 0.3s ease; }
-@keyframes cardIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
-
 .q-card .meta { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; align-items: center; }
 .q-card .q-title {
   font-size: 15px;
@@ -364,7 +361,7 @@ label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+  transition: none;
   background: rgba(255,255,255,0.02);
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
@@ -726,7 +723,6 @@ const App = {
   quizState: { mode: 'all', questions: [], idx: 0, answered: false, selected: null,
     isCorrect: false, sessionStats: { correct: 0, wrong: 0, total: 0 }, startOpts: {} },
   _gridFilter: 'all',
-  _animId: 0, // increment to break stale animation locks
 
   // 过滤 HTML 标签
   sanitize(text) {
@@ -1195,13 +1191,6 @@ const App = {
       </div>
     `;
 
-    // 惯性动画：新题目才播放cardIn
-    const qCard = document.getElementById('qCardMain');
-    if (qCard && !qCard.dataset.rendered) {
-      qCard.classList.add('animate');
-      qCard.dataset.rendered = '1';
-    }
-
     // 左右滑动手势（仅首次渲染时绑定一次）
     const appEl = document.getElementById('app');
     if (!appEl.dataset.swipeInit) {
@@ -1210,6 +1199,7 @@ const App = {
         touchStartX = e.changedTouches[0].screenX;
         touchStartY = e.changedTouches[0].screenY;
         swiping = false;
+        App._swipeBlock = false;
       }, { passive: true });
       appEl.addEventListener('touchmove', (e) => {
         if (swiping) return;
@@ -1222,6 +1212,8 @@ const App = {
         const dy = e.changedTouches[0].screenY - touchStartY;
         const s = App.quizState;
         if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+          App._swipeBlock = true;
+          setTimeout(() => App._swipeBlock = false, 300);
           if (dx < 0 && s.answered) App.nextQuestion();
           else if (dx > 0 && s.idx > 0) App.prevQuestion();
         }
@@ -1231,6 +1223,7 @@ const App = {
   },
 
   selectOption(label) {
+    if (this._swipeBlock) return;
     const s = this.quizState;
     if (s.answered) return;
     const q = s.questions[s.idx];
@@ -1347,7 +1340,7 @@ const App = {
     const s = this.quizState;
     document.getElementById('aiBox')?.classList.remove('show');
     if (s.idx < s.questions.length - 1) {
-      s.idx++; document.getElementById('qCardMain')?.removeAttribute('data-rendered');
+      s.idx++;
       if (s.mode === 'review') {
         s.answered = true; s.selected = null;
       } else {
@@ -1367,7 +1360,7 @@ const App = {
     const s = this.quizState;
     document.getElementById('aiBox')?.classList.remove('show');
     if (s.idx <= 0) return;
-    s.idx--; document.getElementById('qCardMain')?.removeAttribute('data-rendered');
+    s.idx--;
     // 已答题回顾：显示正确答案
     s.answered = true; s.selected = null;
     this.renderQuiz();
