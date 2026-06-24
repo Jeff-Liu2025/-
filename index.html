@@ -1189,9 +1189,10 @@ const App = {
           </div>
           <div class="q-title">${nq.题目.replace(/<[^>]+>/g,'')}</div>
           <div class="options">${nextHtml}</div>
+          ${s.mode === 'review' ? `
           <div class="feedback show reveal-answer" style="display:block;background:var(--correct-dim);color:var(--correct);border:1px solid rgba(16,185,129,0.2);font-weight:600;">
-            📖 正确答案：${nIsJudge ? (nCorrectAns === 'true' ? '正确' : '错误') : nCorrectAns}
-          </div>
+            📖 速览模式
+          </div>` : ''}
         </div>`;
     }
 
@@ -1329,10 +1330,9 @@ const App = {
 
         // 阻力反馈：边界情况减弱偏移量
         let offset = dx;
-        // 未答不能下一题（左滑受限制）
-        if (dx < 0 && !s.answered && s.mode !== 'review') offset = dx * 0.2;
-        // 第一题不能上一题（右滑受限制）
-        else if (dx > 0 && s.idx <= 0) offset = dx * 0.2;
+        // 首题右滑或末题左滑才限制
+        if (s.idx <= 0 && dx > 0) offset = dx * 0.2;
+        else if (s.idx >= s.questions.length - 1 && dx < 0) offset = dx * 0.2;
 
         cur.style.transform = `translateX(${offset}px)`;
 
@@ -1354,7 +1354,7 @@ const App = {
         if (!cur) return;
 
         // 检查有效性（边界限制）
-        let canLeft = (s.answered || s.mode === 'review') && s.idx < s.questions.length - 1;
+        let canLeft = s.idx < s.questions.length - 1;
         let canRight = s.idx > 0;
         let isLeft = dx < 0;
         let isRight = dx > 0;
@@ -1371,21 +1371,29 @@ const App = {
         const unblock = () => { App._swipeBlock = false; };
 
         if (absDx > threshold && ((isLeft && canLeft) || (isRight && canRight))) {
-          // 有效滑动：滑出
-          cur.classList.add('snap');
-          const exitX = isLeft ? -cardWidth * 1.2 : cardWidth * 1.2;
-          cur.style.transform = `translateX(${exitX}px)`;
-          // 下一张滑入
-          if (next && isLeft) {
-            next.classList.add('enter');
-            next.style.transform = 'translateX(0)';
-            next.style.opacity = '1';
+          if (isLeft) {
+            // 左滑（下一题）：有预渲染卡片，完整动画
+            cur.classList.add('snap');
+            cur.style.transform = `translateX(${-cardWidth * 1.2}px)`;
+            if (next) {
+              next.classList.add('enter');
+              next.style.transform = 'translateX(0)';
+              next.style.opacity = '1';
+            }
+            setTimeout(() => {
+              unblock();
+              App.nextQuestion();
+            }, 350);
+          } else {
+            // 右滑（上一题）：无预渲染卡片，快速淡出
+            cur.classList.add('snap');
+            cur.style.transform = `translateX(${cardWidth * 0.3}px)`;
+            cur.style.opacity = '0';
+            setTimeout(() => {
+              unblock();
+              App.prevQuestion();
+            }, 200);
           }
-          setTimeout(() => {
-            unblock();
-            if (isLeft) App.nextQuestion();
-            else App.prevQuestion();
-          }, 350);
         } else {
           // 未达阈值：弹回
           cur.classList.add('snap');
