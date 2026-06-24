@@ -425,6 +425,13 @@ label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 
   border: 1px solid rgba(239,68,68,0.2);
 }
 
+/* ===== SWIPE CARD ===== */
+.q-card-wrap { position: relative; overflow: hidden; margin-bottom: 12px; }
+.q-card-wrap .q-card { margin-bottom: 0; will-change: transform; }
+.q-card-wrap .q-card.snap { transition: transform 0.4s cubic-bezier(0.22,1,0.36,1); }
+.q-card-wrap .q-card-next { position: absolute; top: 0; left: 0; width: 100%; transform: translateX(100%); opacity: 0.8; }
+.q-card-wrap .q-card-next.enter { transition: transform 0.4s cubic-bezier(0.22,1,0.36,1), opacity 0.35s ease; }
+
 /* ===== MASTERY BAR ===== */
 .mastery-bar {
   height: 3px;
@@ -462,6 +469,7 @@ label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 
   user-select: none; position: relative;
 }
 .qgrid-item:active { transform: scale(0.85); }
+.qgrid-item.selected { outline: 2px solid var(--cyan); outline-offset: 1px; box-shadow: 0 0 12px var(--cyan-dim); }
 .qgrid-item.correct { background: var(--correct-dim); border-color: var(--correct); color: var(--correct); }
 .qgrid-item.wrong { background: var(--wrong-dim); border-color: var(--wrong); color: var(--wrong); }
 .qgrid-item.mixed { background: var(--gold-dim); border-color: var(--gold); color: var(--gold); }
@@ -658,6 +666,8 @@ function loadQuestionBank() {
       if (appDiv) appDiv.innerHTML = '<div class="empty"><div class="icon">❌</div><h3>加载失败</h3><p>请确保 questions.js 在同一目录下</p></div>';
       return;
     }
+    // 启动时清理过期日志
+    Store.cleanOldData();
     App.nav('dashboard');
   };
   script.onerror = () => {
@@ -674,7 +684,37 @@ const Store = {
     catch { return def; }
   },
   set(key, val) {
-    try { const d = JSON.parse(localStorage.getItem('quizMastery') || '{}'); d[key] = val; localStorage.setItem('quizMastery', JSON.stringify(d)); } catch {}
+    try {
+      const d = JSON.parse(localStorage.getItem('quizMastery') || '{}');
+      d[key] = val;
+      localStorage.setItem('quizMastery', JSON.stringify(d));
+    } catch {
+      // 写入失败时自动清理旧日志后重试一次
+      try {
+        const d = JSON.parse(localStorage.getItem('quizMastery') || '{}');
+        if (d.stats && Array.isArray(d.stats.dailyLog) && d.stats.dailyLog.length > 60) {
+          d.stats.dailyLog.sort((a, b) => a.date < b.date ? 1 : -1);
+          d.stats.dailyLog = d.stats.dailyLog.slice(0, 60);
+          d.stats = d.stats;
+          d[key] = val;
+          localStorage.setItem('quizMastery', JSON.stringify(d));
+        }
+      } catch {}
+    }
+  },
+  // 每月清理一次过期日志（主动调用）
+  cleanOldData() {
+    try {
+      const d = JSON.parse(localStorage.getItem('quizMastery') || '{}');
+      const st = d.stats;
+      if (st && Array.isArray(st.dailyLog) && st.dailyLog.length > 60) {
+        st.dailyLog.sort((a, b) => a.date < b.date ? 1 : -1);
+        st.dailyLog = st.dailyLog.slice(0, 60);
+        d.stats = st;
+        localStorage.setItem('quizMastery', JSON.stringify(d));
+      }
+      try { const p = JSON.parse(localStorage.getItem('quizProgress') || 'null'); if (p && Date.now() - p.timestamp > 48 * 60 * 60 * 1000) localStorage.removeItem('quizProgress'); } catch {}
+    } catch {}
   },
   get mastery() { return this.get('mastery', {}); },
   set mastery(v) { this.set('mastery', v); },
@@ -725,6 +765,7 @@ const App = {
   quizState: { mode: 'all', questions: [], idx: 0, answered: false, selected: null,
     isCorrect: false, sessionStats: { correct: 0, wrong: 0, total: 0 }, startOpts: {}, answers: {} },
   _gridFilter: 'all',
+  _gridSelected: null,
   _reviewGridOpen: true,
 
   // 过滤 HTML 标签
@@ -880,6 +921,7 @@ const App = {
 
   // 渲染入口
   render() {
+    if (!QUESTION_BANK || !QUESTION_BANK.questions) return;
     const page = this.currentPage;
     if (page === 'dashboard') this.renderDashboard();
     else if (page === 'quiz') this.renderQuiz();
@@ -1110,6 +1152,49 @@ const App = {
     const mlPct = Math.round((m.level || 0) * 100);
     const mlClass = mlPct < 30 ? 'low' : mlPct < 70 ? 'mid' : 'high';
 
+    // 预渲染下一题卡片（用于滑动进入）
+    let nextHtml = '';
+    if (s.idx < s.questions.length - 1) {
+      const nq = s.questions[s.idx + 1];
+      const nm = this.getMastery(nq.序号);
+      const nTypeBadge = nq.题型 === '单选' ? 'badge-single' : nq.题型 === '多选' ? 'badge-multi' : 'badge-judge';
+      let nOptions = [];
+      if (nq.题型 === '判断') {
+        nOptions = [{ label: '正确', text: '正确' }, { label: '错误', text: '错误' }];
+      } else {
+        const keys = ['选项A','选项B','选项C','选项D','选项E','选项F'];
+        nOptions = keys.map((k,i) => ({ label: String.fromCharCode(65+i), text: nq[k] })).filter(o => o.text && o.text.trim());
+      }
+      const nIsJudge = nq.题型 === '判断';
+      let nCorrectSet = new Set();
+      if (nq.正确答案) {
+        if (nIsJudge) nCorrectSet.add(nq.正确答案 === 'true' ? '正确' : '错误');
+        else nCorrectSet = new Set(nq.正确答案.split(',').map(x => x.trim()));
+      }
+      const nCorrectAns = nq.正确答案;
+      nextHtml = nOptions.map((o, i) => {
+        let cls = 'disabled';
+        if (nCorrectSet.has(o.label)) cls = 'correct disabled';
+        return `<div class="option ${cls}"><span class="olabel">${o.label}</span><span class="otext">${o.text}</span></div>`;
+      }).join('');
+      nextHtml = `
+        <div class="q-card q-card-next" id="qCardNext">
+          <div class="meta">
+            <span class="badge ${nTypeBadge}">${nq.题型}</span>
+            <span class="badge" style="background:var(--card2);color:var(--text2)">第${nq.序号}题</span>
+            <span style="margin-left:auto;display:flex;gap:4px">
+              <button class="btn-ai-sm" onclick="App.askAI(${nq.序号})" title="AI 解析">🤖</button>
+              <button class="bookmark-btn" style="margin-left:0" onclick="App.toggleBookmark(${nq.序号})">${nm.starred ? '⭐' : '☆'}</button>
+            </span>
+          </div>
+          <div class="q-title">${nq.题目.replace(/<[^>]+>/g,'')}</div>
+          <div class="options">${nextHtml}</div>
+          <div class="feedback show reveal-answer" style="display:block;background:var(--correct-dim);color:var(--correct);border:1px solid rgba(16,185,129,0.2);font-weight:600;">
+            📖 正确答案：${nIsJudge ? (nCorrectAns === 'true' ? '正确' : '错误') : nCorrectAns}
+          </div>
+        </div>`;
+    }
+
     document.getElementById('app').innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:13px">
         <span style="color:var(--text2)">${s.mode === 'review' ? '📖 复习' : ''}${s.idx + 1}/${s.sessionStats.total}</span>
@@ -1123,53 +1208,56 @@ const App = {
       </div>
       <div class="progress-bar"><div class="fill" style="width:${(s.idx+1)/s.sessionStats.total*100}%"></div></div>
 
-      <div class="q-card" id="qCardMain">
-        <div class="meta">
-          <span class="badge ${typeBadge}">${s.mode === 'review' ? '📖' : ''}${q.题型}</span>
-          <span class="badge" style="background:var(--card2);color:var(--text2)">第${q.序号}题</span>
-          ${s.mode === 'review' ? '' : `<span class="mastery-label">掌握度 ${mlPct}%</span>`}
-          <span style="margin-left:auto;display:flex;gap:4px">
-            <button class="btn-ai-sm" onclick="App.askAI(${q.序号})" title="AI 解析">🤖</button>
-            <button class="bookmark-btn" style="margin-left:0" onclick="App.toggleBookmark(${q.序号})">${m.starred ? '⭐' : '☆'}</button>
-          </span>
-        </div>
-        ${s.mode === 'review' ? '' : `<div class="mastery-bar"><div class="fill ${mlClass}" style="width:${mlPct}%"></div></div>`}
-        <div class="q-title">${q.题目.replace(/<[^>]+>/g,'')}</div>
-
-        <div class="options" id="qOptions">
-          ${options.map(o => {
-            let cls = '';
-            const isMulti = q.题型 === '多选';
-            
-            if (s.answered) {
-              if (correctSet.has(o.label)) cls = 'correct disabled';
-              else if ((isMulti ? (Array.isArray(s.selected) && s.selected.includes(o.label)) : s.selected === o.label) && !correctSet.has(o.label)) cls = 'wrong disabled';
-              else cls = 'disabled';
-            } else if (isMulti && Array.isArray(s.selected) && s.selected.includes(o.label)) {
-              cls = ' selected-multi';
-            }
-            return `<div class="option ${cls}" data-label="${o.label}" onclick="App.selectOption('${o.label}')">
-              <span class="olabel">${o.label}</span><span class="otext">${o.text}</span>
-            </div>`;
-          }).join('')}
-        </div>
-        
-        ${!s.answered && q.题型 === '多选' && s.mode !== 'review' ? `
-          <div style="margin-top:12px;display:flex;gap:8px">
-            <button class="btn btn-primary" style="flex:1" onclick="App.submitMulti()">
-              ✅ 提交 ${Array.isArray(s.selected) ? '(' + s.selected.length + ')' : '(0)'}
-            </button>
-            <button class="btn btn-secondary" style="flex:1" onclick="App.skipMulti()">
-              🙈 不会 · 下一题
-            </button>
+      <div class="q-card-wrap">
+        <div class="q-card" id="qCardCurrent" style="transform:translateX(0)">
+          <div class="meta">
+            <span class="badge ${typeBadge}">${s.mode === 'review' ? '📖' : ''}${q.题型}</span>
+            <span class="badge" style="background:var(--card2);color:var(--text2)">第${q.序号}题</span>
+            ${s.mode === 'review' ? '' : `<span class="mastery-label">掌握度 ${mlPct}%</span>`}
+            <span style="margin-left:auto;display:flex;gap:4px">
+              <button class="btn-ai-sm" onclick="App.askAI(${q.序号})" title="AI 解析">🤖</button>
+              <button class="bookmark-btn" style="margin-left:0" onclick="App.toggleBookmark(${q.序号})">${m.starred ? '⭐' : '☆'}</button>
+            </span>
           </div>
-        ` : ''}
+          ${s.mode === 'review' ? '' : `<div class="mastery-bar"><div class="fill ${mlClass}" style="width:${mlPct}%"></div></div>`}
+          <div class="q-title">${q.题目.replace(/<[^>]+>/g,'')}</div>
 
-        <div class="feedback ${s.mode === 'review' ? 'show reveal-answer' : (s.answered ? 'show ' + (s.isCorrect ? 'correct' : 'wrong') : '')}" style="${s.mode === 'review' ? 'display:block;background:var(--correct-dim);color:var(--correct);border:1px solid rgba(16,185,129,0.2);font-weight:600;' : ''}">
-          ${s.mode === 'review' ? `📖 正确答案：${isJudge ? (correctAns === 'true' ? '正确' : '错误') : correctAns}` : (s.answered ? (s.isCorrect ? '✅ 回答正确！' : '❌ 回答错误') : '')}
-          ${s.answered && s.mode !== 'review' ? `<br><span style="font-weight:400;font-size:13px">
-            正确答案：${isJudge ? (correctAns === 'true' ? '正确' : '错误') : correctAns}</span>` : ''}
+          <div class="options" id="qOptions">
+            ${options.map(o => {
+              let cls = '';
+              const isMulti = q.题型 === '多选';
+              
+              if (s.answered) {
+                if (correctSet.has(o.label)) cls = 'correct disabled';
+                else if ((isMulti ? (Array.isArray(s.selected) && s.selected.includes(o.label)) : s.selected === o.label) && !correctSet.has(o.label)) cls = 'wrong disabled';
+                else cls = 'disabled';
+              } else if (isMulti && Array.isArray(s.selected) && s.selected.includes(o.label)) {
+                cls = ' selected-multi';
+              }
+              return `<div class="option ${cls}" data-label="${o.label}" onclick="App.selectOption('${o.label}')">
+                <span class="olabel">${o.label}</span><span class="otext">${o.text}</span>
+              </div>`;
+            }).join('')}
+          </div>
+          
+          ${!s.answered && q.题型 === '多选' && s.mode !== 'review' ? `
+            <div style="margin-top:12px;display:flex;gap:8px">
+              <button class="btn btn-primary" style="flex:1" onclick="App.submitMulti()">
+                ✅ 提交 ${Array.isArray(s.selected) ? '(' + s.selected.length + ')' : '(0)'}
+              </button>
+              <button class="btn btn-secondary" style="flex:1" onclick="App.skipMulti()">
+                🙈 不会 · 下一题
+              </button>
+            </div>
+          ` : ''}
+
+          <div class="feedback ${s.mode === 'review' ? 'show reveal-answer' : (s.answered ? 'show ' + (s.isCorrect ? 'correct' : 'wrong') : '')}" style="${s.mode === 'review' ? 'display:block;background:var(--correct-dim);color:var(--correct);border:1px solid rgba(16,185,129,0.2);font-weight:600;' : ''}">
+            ${s.mode === 'review' ? `📖 正确答案：${isJudge ? (correctAns === 'true' ? '正确' : '错误') : correctAns}` : (s.answered ? (s.isCorrect ? '✅ 回答正确！' : '❌ 回答错误') : '')}
+            ${s.answered && s.mode !== 'review' ? `<br><span style="font-weight:400;font-size:13px">
+              正确答案：${isJudge ? (correctAns === 'true' ? '正确' : '错误') : correctAns}</span>` : ''}
+          </div>
         </div>
+        ${nextHtml}
       </div>
 
       ${s.answered ? `
@@ -1204,38 +1292,110 @@ const App = {
       </div>
     `;
 
-    // 新题目入场动画（仅播放一次）
-    const qCard = document.getElementById('qCardMain');
-    if (qCard && !qCard.dataset.rendered) {
-      qCard.classList.add('animate');
-      qCard.dataset.rendered = '1';
-    }
-
     // 左右滑动手势（仅首次渲染时绑定一次）
     const appEl = document.getElementById('app');
     if (!appEl.dataset.swipeInit) {
-      let touchStartX = 0, touchStartY = 0, swiping = false;
+      const ctx = { startX: 0, startY: 0, isSwiping: false, releasing: false };
       appEl.addEventListener('touchstart', (e) => {
-        touchStartX = e.changedTouches[0].screenX;
-        touchStartY = e.changedTouches[0].screenY;
-        swiping = false;
+        const t = e.changedTouches[0];
+        ctx.startX = t.screenX;
+        ctx.startY = t.screenY;
+        ctx.isSwiping = false;
+        ctx.releasing = false;
         App._swipeBlock = false;
+        // 清除进行中的 transition
+        const cur = document.getElementById('qCardCurrent');
+        if (cur) { cur.classList.remove('snap'); cur.style.transform = 'translateX(0)'; }
+        const next = document.getElementById('qCardNext');
+        if (next) { next.classList.remove('enter'); next.style.transform = 'translateX(100%)'; next.style.opacity = '0.8'; }
       }, { passive: true });
+
       appEl.addEventListener('touchmove', (e) => {
-        if (swiping) return;
-        const dx = Math.abs(e.changedTouches[0].screenX - touchStartX);
-        const dy = Math.abs(e.changedTouches[0].screenY - touchStartY);
-        if (dx > 20 && dx > dy * 1.5) { swiping = true; e.preventDefault(); }
-      }, { passive: false });
-      appEl.addEventListener('touchend', (e) => {
-        const dx = e.changedTouches[0].screenX - touchStartX;
-        const dy = e.changedTouches[0].screenY - touchStartY;
+        if (ctx.releasing) return;
+        const t = e.changedTouches[0];
+        const dx = t.screenX - ctx.startX;
+        const dy = t.screenY - ctx.startY;
+        // 当水平距离 > 垂直距离的 1.2 倍且水平距离 > 8px，判定为滑动
+        if (!ctx.isSwiping) {
+          if (Math.abs(dx) < 8 || Math.abs(dy) > Math.abs(dx) * 1.2) return;
+          ctx.isSwiping = true;
+        }
+        e.preventDefault();
+
         const s = App.quizState;
-        if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-          App._swipeBlock = true;
-          setTimeout(() => App._swipeBlock = false, 300);
-          if (dx < 0 && s.answered) App.nextQuestion();
-          else if (dx > 0 && s.idx > 0) App.prevQuestion();
+        const cur = document.getElementById('qCardCurrent');
+        const next = document.getElementById('qCardNext');
+        if (!cur) return;
+
+        // 阻力反馈：边界情况减弱偏移量
+        let offset = dx;
+        // 未答不能下一题（左滑受限制）
+        if (dx < 0 && !s.answered && s.mode !== 'review') offset = dx * 0.2;
+        // 第一题不能上一题（右滑受限制）
+        else if (dx > 0 && s.idx <= 0) offset = dx * 0.2;
+
+        cur.style.transform = `translateX(${offset}px)`;
+
+        // 下一张卡片跟随露出
+        if (next && offset < 0) {
+          const progress = Math.min(Math.abs(offset) / 400, 1);
+          next.style.transform = `translateX(${100 - progress * 100}%)`;
+          next.style.opacity = String(0.3 + progress * 0.7);
+        }
+      }, { passive: false });
+
+      appEl.addEventListener('touchend', (e) => {
+        if (ctx.releasing || !ctx.isSwiping) return;
+        ctx.releasing = true;
+        const dx = e.changedTouches[0].screenX - ctx.startX;
+        const s = App.quizState;
+        const cur = document.getElementById('qCardCurrent');
+        const next = document.getElementById('qCardNext');
+        if (!cur) return;
+
+        // 检查有效性（边界限制）
+        let canLeft = (s.answered || s.mode === 'review') && s.idx < s.questions.length - 1;
+        let canRight = s.idx > 0;
+        let isLeft = dx < 0;
+        let isRight = dx > 0;
+
+        const cardWidth = cur.offsetWidth || 300;
+        const threshold = cardWidth * 0.3;
+        let absDx = Math.abs(dx);
+
+        // 如果受边界限制，用阻力后的偏移量计算
+        if (isLeft && !canLeft) absDx = Math.abs(dx * 0.2);
+        if (isRight && !canRight) absDx = Math.abs(dx * 0.2);
+
+        App._swipeBlock = true;
+        const unblock = () => { App._swipeBlock = false; };
+
+        if (absDx > threshold && ((isLeft && canLeft) || (isRight && canRight))) {
+          // 有效滑动：滑出
+          cur.classList.add('snap');
+          const exitX = isLeft ? -cardWidth * 1.2 : cardWidth * 1.2;
+          cur.style.transform = `translateX(${exitX}px)`;
+          // 下一张滑入
+          if (next && isLeft) {
+            next.classList.add('enter');
+            next.style.transform = 'translateX(0)';
+            next.style.opacity = '1';
+          }
+          setTimeout(() => {
+            unblock();
+            if (isLeft) App.nextQuestion();
+            else App.prevQuestion();
+          }, 350);
+        } else {
+          // 未达阈值：弹回
+          cur.classList.add('snap');
+          cur.style.transform = 'translateX(0)';
+          if (next) {
+            next.classList.add('enter');
+            next.style.transform = 'translateX(100%)';
+            next.style.opacity = '0.8';
+          }
+          setTimeout(unblock, 400);
         }
       }, { passive: true });
       appEl.dataset.swipeInit = '1';
@@ -1364,9 +1524,6 @@ const App = {
     document.getElementById('aiBox')?.classList.remove('show');
     if (s.idx < s.questions.length - 1) {
       s.idx++;
-      // 重置动画标记，新题目播放入场动画
-      const qc = document.getElementById('qCardMain');
-      if (qc) qc.removeAttribute('data-rendered');
       if (s.mode === 'review') {
         s.answered = true; s.selected = null;
       } else {
@@ -1376,7 +1533,6 @@ const App = {
       const nextQ = s.questions[s.idx];
       if (nextQ && nextQ.题型 === '多选') s.selected = [];
       this.renderQuiz();
-      window.scrollTo({ top: 0, behavior: 'smooth' });
     } else {
       this.showQuizSummary();
     }
@@ -1397,7 +1553,6 @@ const App = {
     s.answered = true;
     document.getElementById('aiBox')?.classList.remove('show');
     this.renderQuiz();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
   },
 
   showQuizSummary() {
@@ -1504,7 +1659,10 @@ const App = {
   renderQuestionGrid(type) {
     const qs = QUESTION_BANK.questions || [];
     const m = Store.mastery;
-    if (type) this._gridFilter = type;
+    if (type) {
+      if (type !== this._gridFilter) this._gridSelected = null;
+      this._gridFilter = type;
+    }
     const filterType = this._gridFilter || 'all';
 
     let filtered = qs;
@@ -1533,7 +1691,7 @@ const App = {
         ${tabs.map(t => `<button class="${filterType === t.key ? 'active' : ''}" onclick="App.renderQuestionGrid('${t.key}')">${t.label}</button>`).join('')}
       </div>
       <div class="qgrid-container">
-        ${items.map(q => `<div class="qgrid-item ${q.cls}" onclick="App.jumpToQuestion(${q.序号})">${q.序号}</div>`).join('')}
+        ${items.map(q => `<div class="qgrid-item ${q.cls} ${this._gridSelected === q.序号 ? 'selected' : ''}" onclick="App.gridClick(${q.序号})">${q.序号}</div>`).join('')}
       </div>
       <div class="qgrid-legend">
         <span><span class="dot dot-correct"></span> 对 ${correctCount}</span>
@@ -1543,6 +1701,17 @@ const App = {
       </div>
     </div>
     `;
+  },
+
+  // 题号二次确认点击
+  gridClick(qId) {
+    if (this._gridSelected === qId) {
+      this._gridSelected = null;
+      this.jumpToQuestion(qId);
+    } else {
+      this._gridSelected = qId;
+      this.renderQuestionGrid();
+    }
   },
 
   jumpToQuestion(qId) {
