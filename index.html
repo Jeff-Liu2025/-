@@ -1202,22 +1202,32 @@ const App = {
       qCard.dataset.rendered = '1';
     }
 
-    // 左右滑动手势
+    // 左右滑动手势（仅首次渲染时绑定一次）
     const appEl = document.getElementById('app');
-    let touchStartX = 0, touchStartY = 0;
-    appEl.ontouchstart = (e) => {
-      touchStartX = e.changedTouches[0].screenX;
-      touchStartY = e.changedTouches[0].screenY;
-    };
-    appEl.ontouchend = (e) => {
-      const dx = e.changedTouches[0].screenX - touchStartX;
-      const dy = e.changedTouches[0].screenY - touchStartY;
-      const s = App.quizState;
-      if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-        if (dx < 0 && s.answered) App.nextQuestion();
-        else if (dx > 0 && s.idx > 0) App.prevQuestion();
-      }
-    };
+    if (!appEl.dataset.swipeInit) {
+      let touchStartX = 0, touchStartY = 0, swiping = false;
+      appEl.addEventListener('touchstart', (e) => {
+        touchStartX = e.changedTouches[0].screenX;
+        touchStartY = e.changedTouches[0].screenY;
+        swiping = false;
+      }, { passive: true });
+      appEl.addEventListener('touchmove', (e) => {
+        if (swiping) return;
+        const dx = Math.abs(e.changedTouches[0].screenX - touchStartX);
+        const dy = Math.abs(e.changedTouches[0].screenY - touchStartY);
+        if (dx > 20 && dx > dy * 1.5) { swiping = true; e.preventDefault(); }
+      }, { passive: false });
+      appEl.addEventListener('touchend', (e) => {
+        const dx = e.changedTouches[0].screenX - touchStartX;
+        const dy = e.changedTouches[0].screenY - touchStartY;
+        const s = App.quizState;
+        if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+          if (dx < 0 && s.answered) App.nextQuestion();
+          else if (dx > 0 && s.idx > 0) App.prevQuestion();
+        }
+      }, { passive: true });
+      appEl.dataset.swipeInit = '1';
+    }
   },
 
   selectOption(label) {
