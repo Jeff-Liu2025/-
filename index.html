@@ -1123,8 +1123,9 @@ const App = {
     this.nav('quiz');
   },
 
-  renderQuiz() {
+  renderQuiz(opts) {
     const s = this.quizState;
+    const entranceFrom = opts?.from;
     const qs = s.questions;
     if (!qs || qs.length === 0) {
       document.getElementById('app').innerHTML = `<div class="empty"><div class="icon">📭</div><p>没有题目</p></div>`;
@@ -1210,7 +1211,7 @@ const App = {
       <div class="progress-bar"><div class="fill" style="width:${(s.idx+1)/s.sessionStats.total*100}%"></div></div>
 
       <div class="q-card-wrap">
-        <div class="q-card" id="qCardCurrent" style="transform:translateX(0)">
+        <div class="q-card" id="qCardCurrent" style="transform:translateX(${entranceFrom === 'right' ? '60' : '0'}px)">
           <div class="meta">
             <span class="badge ${typeBadge}">${s.mode === 'review' ? '📖' : ''}${q.题型}</span>
             <span class="badge" style="background:var(--card2);color:var(--text2)">第${q.序号}题</span>
@@ -1293,6 +1294,17 @@ const App = {
       </div>
     `;
 
+    // 入场动画：来自右侧的卡片（prevQuestion）slide-in
+    if (entranceFrom === 'right') {
+      const card = document.getElementById('qCardCurrent');
+      if (card) {
+        card.classList.add('snap');
+        // 强制回流后触发 transition
+        void card.getBoundingClientRect();
+        card.style.transform = 'translateX(0)';
+      }
+    }
+
     // 左右滑动手势（仅首次渲染时绑定一次）
     const appEl = document.getElementById('app');
     if (!appEl.dataset.swipeInit) {
@@ -1353,7 +1365,6 @@ const App = {
         const next = document.getElementById('qCardNext');
         if (!cur) return;
 
-        // 检查有效性（边界限制）
         let canLeft = s.idx < s.questions.length - 1;
         let canRight = s.idx > 0;
         let isLeft = dx < 0;
@@ -1363,16 +1374,14 @@ const App = {
         const threshold = cardWidth * 0.3;
         let absDx = Math.abs(dx);
 
-        // 如果受边界限制，用阻力后的偏移量计算
         if (isLeft && !canLeft) absDx = Math.abs(dx * 0.2);
         if (isRight && !canRight) absDx = Math.abs(dx * 0.2);
 
         App._swipeBlock = true;
-        const unblock = () => { App._swipeBlock = false; };
+        const done = () => { App._swipeBlock = false; };
 
         if (absDx > threshold && ((isLeft && canLeft) || (isRight && canRight))) {
           if (isLeft) {
-            // 左滑（下一题）：有预渲染卡片，完整动画
             cur.classList.add('snap');
             cur.style.transform = `translateX(${-cardWidth * 1.2}px)`;
             if (next) {
@@ -1380,19 +1389,13 @@ const App = {
               next.style.transform = 'translateX(0)';
               next.style.opacity = '1';
             }
-            setTimeout(() => {
-              unblock();
-              App.nextQuestion();
-            }, 350);
+            setTimeout(() => { App.nextQuestion(); done(); }, 300);
           } else {
-            // 右滑（上一题）：无预渲染卡片，快速淡出
+            // 右滑：微微偏移后立即渲染，新卡片从右侧滑入
             cur.classList.add('snap');
-            cur.style.transform = `translateX(${cardWidth * 0.3}px)`;
-            cur.style.opacity = '0';
-            setTimeout(() => {
-              unblock();
-              App.prevQuestion();
-            }, 200);
+            cur.style.transform = `translateX(${cardWidth * 0.35}px)`;
+            cur.style.opacity = '0.5';
+            setTimeout(() => { App.prevQuestion(); done(); }, 80);
           }
         } else {
           // 未达阈值：弹回
@@ -1560,7 +1563,7 @@ const App = {
     }
     s.answered = true;
     document.getElementById('aiBox')?.classList.remove('show');
-    this.renderQuiz();
+    this.renderQuiz({ from: 'right' });
   },
 
   showQuizSummary() {
