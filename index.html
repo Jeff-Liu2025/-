@@ -790,6 +790,9 @@ const App = {
 
   // 自定义弹窗
   showModal(title, msg, onConfirm) {
+    // 移除已有弹窗，防止叠加
+    document.querySelectorAll('.modal-overlay').forEach(el => el.remove());
+    const id = 'm' + Date.now();
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay show';
     overlay.innerHTML = `
@@ -797,14 +800,14 @@ const App = {
         <h3 style="font-size:18px;margin-bottom:8px">${title}</h3>
         <p style="color:var(--text-dim);font-size:14px;line-height:1.6">${msg}</p>
         <div class="btn-group" style="margin-top:16px">
-          ${onConfirm ? `<button class="btn btn-primary btn-block" id="modalConfirm">确定</button>` : ''}
-          <button class="btn btn-secondary btn-block" id="modalClose">${onConfirm ? '取消' : '知道了'}</button>
+          ${onConfirm ? `<button class="btn btn-primary btn-block" id="${id}c">确定</button>` : ''}
+          <button class="btn btn-secondary btn-block" id="${id}x">${onConfirm ? '取消' : '知道了'}</button>
         </div>
       </div>
     `;
     document.body.appendChild(overlay);
-    document.getElementById('modalClose').onclick = () => overlay.remove();
-    if (onConfirm) document.getElementById('modalConfirm').onclick = () => { overlay.remove(); onConfirm(); };
+    document.getElementById(id + 'x').onclick = () => overlay.remove();
+    if (onConfirm) document.getElementById(id + 'c').onclick = () => { overlay.remove(); onConfirm(); };
   },
 
   // 收藏/取消收藏
@@ -1344,7 +1347,10 @@ const App = {
           ${s.questions.map((q2, i) => {
             const m2 = Store.mastery[q2.序号] || {};
             let cls2 = i === s.idx ? 'selected ' : '';
-            cls2 += m2.wrongStreak >= 3 ? 'deep-wrong' : 'wrong';
+            const ws = m2.wrongStreak || 0;
+            if (ws >= 3) cls2 += 'deep-wrong';
+            else if (ws >= 1) cls2 += 'wrong';
+            else cls2 += 'mixed'; // 本轮答对后 wrongStreak=0，显示黄色
             return `<div class="qgrid-item ${cls2}" style="width:32px;height:32px;font-size:11px" onclick="App.wrongGridJump(${i})">${q2.序号}</div>`;
           }).join('')}
         </div>
@@ -1586,19 +1592,24 @@ const App = {
     s.isCorrect = correctSet.has(label);
     s.answered = true;
     s.answers[s.idx] = { selected: s.selected, isCorrect: s.isCorrect };
-    if (s.isCorrect) s.sessionStats.correct++;
+    this._recordAnswer(q.序号, s.isCorrect);
+  },
+
+  // 公共答题记录：统计 + 今日日志 + 持久化
+  _recordAnswer(qId, isCorrect) {
+    const s = this.quizState;
+    if (isCorrect) s.sessionStats.correct++;
     else s.sessionStats.wrong++;
-    this.updateMastery(q.序号, s.isCorrect);
+    this.updateMastery(qId, isCorrect);
     const st = Store.stats;
     st.totalAnswered++;
-    if (s.isCorrect) st.totalCorrect++;
-    // 更新今日记录
+    if (isCorrect) st.totalCorrect++;
     const today = new Date().toISOString().slice(0,10);
     if (!st.dailyLog) st.dailyLog = [];
     let dl = st.dailyLog.find(d => d.date === today);
     if (!dl) { dl = { date: today, answered: 0, correct: 0 }; st.dailyLog.push(dl); }
     dl.answered++;
-    if (s.isCorrect) dl.correct++;
+    if (isCorrect) dl.correct++;
     Store.stats = st;
     this.saveQuizProgress();
     this.renderQuiz();
@@ -1621,22 +1632,7 @@ const App = {
     }
     s.answered = true;
     s.answers[s.idx] = { selected: [...s.selected], isCorrect: s.isCorrect };
-    if (s.isCorrect) s.sessionStats.correct++;
-    else s.sessionStats.wrong++;
-    this.updateMastery(q.序号, s.isCorrect);
-    const st = Store.stats;
-    st.totalAnswered++;
-    if (s.isCorrect) st.totalCorrect++;
-    // 更新今日记录
-    const today = new Date().toISOString().slice(0,10);
-    if (!st.dailyLog) st.dailyLog = [];
-    let dl = st.dailyLog.find(d => d.date === today);
-    if (!dl) { dl = { date: today, answered: 0, correct: 0 }; st.dailyLog.push(dl); }
-    dl.answered++;
-    if (s.isCorrect) dl.correct++;
-    Store.stats = st;
-    this.saveQuizProgress();
-    this.renderQuiz();
+    this._recordAnswer(q.序号, s.isCorrect);
   },
 
   // 多选题跳过（算答错）
@@ -1648,18 +1644,7 @@ const App = {
     s.isCorrect = false;
     s.answered = true;
     s.answers[s.idx] = { selected: [], isCorrect: false };
-    s.sessionStats.wrong++;
-    this.updateMastery(q.序号, false);
-    const st = Store.stats;
-    st.totalAnswered++;
-    const today = new Date().toISOString().slice(0,10);
-    if (!st.dailyLog) st.dailyLog = [];
-    let dl = st.dailyLog.find(d => d.date === today);
-    if (!dl) { dl = { date: today, answered: 0, correct: 0 }; st.dailyLog.push(dl); }
-    dl.answered++;
-    Store.stats = st;
-    this.saveQuizProgress();
-    this.renderQuiz();
+    this._recordAnswer(q.序号, false);
   },
 
   setManual(qId, val) {
