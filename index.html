@@ -566,6 +566,19 @@ label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 
 .wrong-item .wi-title { flex: 1; font-size: 13px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
 .wrong-item .wi-count { font-size: 12px; color: var(--wrong); min-width: 30px; text-align: right; font-weight: 600; }
 
+/* ===== WRONG GRID ===== */
+.wrong-grid-bar { display: flex; gap: 8px; margin-bottom: 12px; }
+.wrong-grid-bar .wgb-item { flex: 1; text-align: center; background: var(--glass); border: 1px solid var(--glass-border); border-radius: var(--radius-sm); padding: 8px 4px; }
+.wrong-grid-bar .wgb-item .wgb-num { font-size: 22px; font-weight: 800; }
+.wrong-grid-bar .wgb-item .wgb-label { font-size: 10px; color: var(--text-muted); }
+
+/* Eliminate progress */
+.eliminate-bar { height: 8px; border-radius: 6px; background: var(--wrong-dim); overflow: hidden; margin: 8px 0; }
+.eliminate-bar .fill { height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--wrong), var(--gold), var(--correct)); transition: width 0.8s cubic-bezier(0.4,0,0.2,1); }
+
+/* Wrong grid item specific */
+.qgrid-item.deep-wrong { background: rgba(185,28,28,0.3); border-color: #b91c1c; color: #fca5a5; }
+
 /* ===== EMPTY STATE ===== */
 /* Spinner */
 .spinner {
@@ -809,17 +822,107 @@ const App = {
     const qs = QUESTION_BANK.questions || [];
     return qs.filter(q => Store.mastery[q.序号]?.starred);
   },
-
-  // 考前速览模式
-  startReview() {
+  // 获取错题列表
+  getWrongQuestions() {
     const qs = QUESTION_BANK.questions || [];
+    return qs.filter(q => {
+      const m = Store.mastery[q.序号];
+      return m && m.wrongStreak >= 1;
+    });
+  },
+  // 错题统计
+  getWrongStats() {
+    const wrong = this.getWrongQuestions();
+    const m = Store.mastery;
+    let totalWrongEver = 0, eliminated = 0;
+    for (const q of (QUESTION_BANK.questions || [])) {
+      const mm = m[q.序号];
+      if (mm?.everWrong) {
+        totalWrongEver++;
+        if (!mm.wrongStreak || mm.wrongStreak <= 0) eliminated++;
+      }
+    }
+    return { current: wrong.length, totalEver: totalWrongEver, eliminated, avgWrong: wrong.reduce((s,q) => s + ((m[q.序号]?.wrongStreak) || 0), 0) / Math.max(1, wrong.length) };
+  },
+
+  // 考前速览（支持 filter: 'all' 或 'wrong'）
+  startReview(filter) {
+    let qs;
+    if (filter === 'wrong') {
+      qs = this.getWrongQuestions();
+      if (qs.length === 0) { App.showModal('提示', '🎉 没有错题！'); return; }
+    } else {
+      qs = QUESTION_BANK.questions || [];
+    }
     this.quizState = {
       mode: 'review', questions: [...qs], idx: 0, answered: true,
       selected: null, isCorrect: true,
       sessionStats: { correct: 0, wrong: 0, total: qs.length },
-      answers: {}
+      answers: {}, startOpts: { filter }
     };
     this.nav('quiz');
+  },
+
+  // 错题刷题模式（随机+题号网格）
+  startWrongMode(opts) {
+    const wrong = this.getWrongQuestions();
+    if (wrong.length === 0) { App.showModal('提示', '🎉 没有错题！'); return; }
+    let questions = [...wrong];
+    // 随机打乱
+    for (let i = questions.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [questions[i], questions[j]] = [questions[j], questions[i]];
+    }
+    // 检查是否有未完成的进度
+    const saved = this._loadWrongProgress();
+    this.quizState = {
+      mode: 'wrong', questions, idx: 0, answered: false,
+      selected: null, isCorrect: false,
+      sessionStats: { correct: 0, wrong: 0, total: questions.length },
+      startOpts: opts || {}, answers: {}
+    };
+
+    if (saved && saved.idx > 0 && saved.total === wrong.length) {
+      App.showModal('继续上次', `上次做到第 ${saved.idx + 1}/${saved.total} 题（答对 ${saved.correct}，答错 ${saved.wrong}）是否继续？`, () => {
+        this.quizState.idx = Math.min(saved.idx, questions.length - 1);
+        this.quizState.sessionStats.correct = saved.correct || 0;
+        this.quizState.sessionStats.wrong = saved.wrong || 0;
+        this.nav('quiz');
+      });
+      // 不点「继续」的话就从第一题开始
+      setTimeout(() => {
+        if (this.currentPage !== 'quiz') this.nav('quiz');
+      }, 100);
+    } else {
+      this.nav('quiz');
+    }
+  },
+
+  // 错题进度保存/恢复
+  _saveWrongProgress() {
+    try {
+      const s = this.quizState;
+      if (s.mode !== 'wrong' || !s.questions || s.questions.length === 0) return;
+      localStorage.setItem('wrongProgress', JSON.stringify({
+        idx: s.idx,
+        total: s.sessionStats.total,
+        correct: s.sessionStats.correct,
+        wrong: s.sessionStats.wrong,
+        timestamp: Date.now()
+      }));
+    } catch {}
+  },
+  _loadWrongProgress() {
+    try {
+      const d = localStorage.getItem('wrongProgress');
+      if (!d) return null;
+      const p = JSON.parse(d);
+      if (Date.now() - p.timestamp > 48 * 60 * 60 * 1000) { localStorage.removeItem('wrongProgress'); return null; }
+      return p;
+    } catch { return null; }
+  },
+  _clearWrongProgress() {
+    try { localStorage.removeItem('wrongProgress'); } catch {}
   },
 
   // 搜索题目
@@ -859,6 +962,7 @@ const App = {
         timestamp: Date.now()
       };
       localStorage.setItem('quizProgress', JSON.stringify(payload));
+      if (s.mode === 'wrong') this._saveWrongProgress();
     } catch {}
   },
   loadQuizProgress() {
@@ -891,14 +995,14 @@ const App = {
 
   // 获取题目的掌握数据
   getMastery(qId) {
-    const m = Store.mastery[qId] || { level: 0, attempts: 0, correct: 0, wrongStreak: 0, lastSeen: null, manual: null };
+    const m = Store.mastery[qId] || { level: 0, attempts: 0, correct: 0, wrongStreak: 0, lastSeen: null, manual: null, everWrong: false };
     return m;
   },
   updateMastery(qId, correct) {
     const m = this.getMastery(qId);
     m.attempts++;
     if (correct) { m.correct++; m.wrongStreak = 0; }
-    else { m.wrongStreak++; }
+    else { m.wrongStreak++; m.everWrong = true; }
     m.lastSeen = new Date().toISOString();
     // Auto-calculate level
     const ratio = m.attempts > 0 ? m.correct / m.attempts : 0;
@@ -984,6 +1088,29 @@ const App = {
         <div style="font-size:11px;color:var(--text-muted);margin-top:4px">回车搜索，搜索后自动进入刷题</div>
       </div>
 
+      ${(() => {
+        const ws = App.getWrongStats();
+        const eliminatePct = ws.totalEver > 0 ? Math.round(ws.eliminated / ws.totalEver * 100) : 0;
+        return `
+        <div class="glass" style="border-color:rgba(239,68,68,0.2)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span style="font-size:15px;font-weight:600">📕 错题本</span>
+            <span style="font-size:12px;color:var(--text-dim)">已消灭 ${ws.eliminated} 题</span>
+          </div>
+          <div class="wrong-grid-bar">
+            <div class="wgb-item"><div class="wgb-num" style="color:var(--wrong)">${ws.current}</div><div class="wgb-label">当前错题</div></div>
+            <div class="wgb-item"><div class="wgb-num" style="color:var(--gold)">${ws.avgWrong.toFixed(1)}</div><div class="wgb-label">平均错次</div></div>
+            <div class="wgb-item"><div class="wgb-num" style="color:var(--correct)">${ws.eliminated}</div><div class="wgb-label">已纠正</div></div>
+          </div>
+          <div class="eliminate-bar"><div class="fill" style="width:${eliminatePct}%"></div></div>
+          <div class="btn-group" style="margin-top:8px;flex-wrap:wrap">
+            <button class="btn btn-primary btn-sm" style="flex:1" onclick="App.startWrongMode()">🔀 随机刷</button>
+            <button class="btn btn-secondary btn-sm" style="flex:1" onclick="App.startReview('wrong')">📖 只看答案</button>
+            <button class="btn btn-secondary btn-sm" style="flex:1" onclick="App.nav('wrongbook')">📋 错题本</button>
+          </div>
+        </div>`;
+      })()}
+
       <div class="glass">
         <h3 style="font-size:15px;margin-bottom:10px">⚡ 快速开始</h3>
         <div class="btn-group" style="flex-direction:column">
@@ -991,13 +1118,10 @@ const App = {
             🚀 20题速刷 · 专攻最不会的
           </button>
           <button class="btn btn-secondary btn-block" onclick="App.startReview()">
-            📖 考前速览 · 只看不答
+            📖 考前速览 · 全部题
           </button>
           <button class="btn btn-secondary btn-block" onclick="App.startMode('all')">
             📚 全部顺序刷
-          </button>
-          <button class="btn btn-secondary btn-block" onclick="App.startMode('wrong')">
-            📕 错题重刷
           </button>
           <button class="btn btn-secondary btn-block" onclick="App.showAIPlan()">
             🤖 AI 定制刷题计划
@@ -1209,6 +1333,23 @@ const App = {
         <button class="btn btn-sm btn-secondary" onclick="App.quitQuiz()">${s.mode === 'review' ? '结束速览' : '退出'}</button>
       </div>
       <div class="progress-bar"><div class="fill" style="width:${(s.idx+1)/s.sessionStats.total*100}%"></div></div>
+
+      ${s.mode === 'wrong' ? `
+      <div class="glass" style="padding:8px 12px;margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--text-dim);margin-bottom:4px">
+          <span>📕 错题进度</span>
+          <span style="cursor:pointer" onclick="const g=document.getElementById('wrongGridBody');if(g){g.style.display=g.style.display==='none'?'flex':'none'}">切换 ▼</span>
+        </div>
+        <div class="qgrid-container" id="wrongGridBody" style="gap:4px">
+          ${s.questions.map((q2, i) => {
+            const m2 = Store.mastery[q2.序号] || {};
+            let cls2 = i === s.idx ? 'selected ' : '';
+            cls2 += m2.wrongStreak >= 3 ? 'deep-wrong' : 'wrong';
+            return `<div class="qgrid-item ${cls2}" style="width:32px;height:32px;font-size:11px" onclick="App.wrongGridJump(${i})">${q2.序号}</div>`;
+          }).join('')}
+        </div>
+      </div>
+      ` : ''}
 
       <div class="q-card-wrap">
         <div class="q-card" id="qCardCurrent" style="transform:translateX(${entranceFrom === 'right' ? '60' : '0'}px)">
@@ -1568,14 +1709,46 @@ const App = {
 
   showQuizSummary() {
     const s = this.quizState;
+
+    // 错题模式完成：清除错题进度，显示消灭结果
+    if (s.mode === 'wrong') {
+      this._clearWrongProgress();
+      const ws = this.getWrongStats();
+      const total = s.sessionStats.correct + s.sessionStats.wrong;
+      const rate = total > 0 ? Math.round(s.sessionStats.correct / total * 100) : 0;
+      document.getElementById('app').innerHTML = `
+        <div class="glass" style="text-align:center;padding:40px 20px">
+          <div style="font-size:48px;margin-bottom:12px">${rate >= 80 ? '🎉' : rate >= 50 ? '💪' : '📚'}</div>
+          <h2 style="font-size:22px;margin-bottom:8px">错题刷题完成！</h2>
+          <div class="stats-grid" style="margin-top:16px">
+            <div class="stat-card"><div class="num green">${s.sessionStats.correct}</div><div class="label">答对</div></div>
+            <div class="stat-card"><div class="num red">${s.sessionStats.wrong}</div><div class="label">答错</div></div>
+            <div class="stat-card"><div class="num gold">${rate}%</div><div class="label">正确率</div></div>
+            <div class="stat-card"><div class="num">${total}</div><div class="label">刷题数</div></div>
+          </div>
+          <div style="margin:12px auto;max-width:280px">
+            <div class="eliminate-bar" style="margin:0"><div class="fill" style="width:${ws.totalEver > 0 ? Math.round(ws.eliminated/ws.totalEver*100) : 0}%"></div></div>
+            <div style="font-size:12px;color:var(--text-dim);margin-top:4px">已消灭 ${ws.eliminated}/${ws.totalEver} 道错题</div>
+          </div>
+          <div class="btn-group" style="margin-top:16px;justify-content:center">
+            <button class="btn btn-primary" onclick="App.startWrongMode()">🔄 再来一轮</button>
+            <button class="btn btn-secondary" onclick="App.nav('wrongbook')">📋 错题本</button>
+            <button class="btn btn-secondary" onclick="App.nav('dashboard')">🏠 首页</button>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
     if (s.mode === 'review') {
+      const reviewFilter = s.startOpts?.filter;
       document.getElementById('app').innerHTML = `
         <div class="glass" style="text-align:center;padding:40px 20px">
           <div style="font-size:48px;margin-bottom:12px">📖</div>
           <h2 style="font-size:22px;margin-bottom:8px">速览完成！</h2>
           <p style="color:var(--text-dim);margin-bottom:16px">已复习全部 ${s.sessionStats.total} 题</p>
           <div style="display:flex;gap:8px;justify-content:center">
-            <button class="btn btn-primary" onclick="App.startReview()">🔄 再来一遍</button>
+            <button class="btn btn-primary" onclick="App.startReview('${reviewFilter || ''}')">🔄 再来一遍</button>
             <button class="btn btn-secondary" onclick="App.nav('dashboard')">🏠 返回首页</button>
           </div>
         </div>
@@ -1610,40 +1783,85 @@ const App = {
   // ===== 错题本 =====
   renderWrongBook() {
     const qs = QUESTION_BANK.questions || [];
-    const wrong = qs.filter(q => {
-      const m = Store.mastery[q.序号];
-      return m && m.wrongStreak >= 1;
-    }).sort((a, b) => {
-      return (Store.mastery[b.序号]?.wrongStreak || 0) - (Store.mastery[a.序号]?.wrongStreak || 0);
-    });
+    const m = Store.mastery;
+    const allWrong = qs.filter(q => { const mm = m[q.序号]; return mm && mm.wrongStreak >= 1; });
     const starred = this.getBookmarked();
+    const ws = this.getWrongStats();
+    const eliminatePct = ws.totalEver > 0 ? Math.round(ws.eliminated / ws.totalEver * 100) : 0;
 
-    if (wrong.length === 0 && starred.length === 0) {
-      document.getElementById('app').innerHTML = `
-        <div class="empty"><div class="icon">🎉</div><h3>没有错题和收藏！</h3><p>继续保持</p></div>
-      `;
+    // type filter
+    if (!this._wbFilter) this._wbFilter = 'all';
+    let filtered = allWrong;
+    if (this._wbFilter !== 'all') filtered = allWrong.filter(q => q.题型 === this._wbFilter);
+    const sorted = [...filtered].sort((a, b) => (m[b.序号]?.wrongStreak || 0) - (m[a.序号]?.wrongStreak || 0));
+
+    if (allWrong.length === 0 && starred.length === 0) {
+      document.getElementById('app').innerHTML = `<div class="empty"><div class="icon">🎉</div><h3>没有错题和收藏！</h3><p>继续保持</p></div>`;
       return;
     }
 
     let html = '';
 
-    if (wrong.length > 0) {
+    if (allWrong.length > 0) {
+      // 消灭进度
       html += `
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-        <h3 style="font-size:16px">📕 错题本 (${wrong.length}题)</h3>
-        <button class="btn btn-sm btn-primary" onclick="App.startMode('wrong')">全部重刷</button>
+      <div class="glass" style="padding:14px 16px;">
+        <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+          <span style="font-weight:600">💪 消灭错题</span>
+          <span style="color:var(--text-dim)">已消灭 ${ws.eliminated}/${ws.totalEver} 题</span>
+        </div>
+        <div class="eliminate-bar"><div class="fill" style="width:${eliminatePct}%"></div></div>
+        <div style="display:flex;gap:12px;margin-top:6px;font-size:12px;color:var(--text-dim)">
+          <span>🔴 当前 <b style="color:var(--wrong)">${ws.current}</b></span>
+          <span>✅ 已消灭 <b style="color:var(--correct)">${ws.eliminated}</b></span>
+          <span>📊 消灭率 <b>${eliminatePct}%</b></span>
+        </div>
       </div>
-      ${wrong.map(q => {
-        const m = Store.mastery[q.序号];
+      <div style="display:flex;gap:8px;margin:12px 0">
+        <button class="btn btn-primary btn-sm" style="flex:1" onclick="App.startWrongMode()">🔀 随机刷</button>
+        <button class="btn btn-secondary btn-sm" style="flex:1" onclick="App.startReview('wrong')">📖 只看答案</button>
+      </div>`;
+
+      // 题号网格
+      html += `
+      <div class="glass" style="padding:12px">
+        <div class="qgrid-tabs">
+          ${[
+            {key:'all', label:`全部(${allWrong.length})`},
+            {key:'单选', label:`单选(${allWrong.filter(q=>q.题型==='单选').length})`},
+            {key:'多选', label:`多选(${allWrong.filter(q=>q.题型==='多选').length})`},
+            {key:'判断', label:`判断(${allWrong.filter(q=>q.题型==='判断').length})`}
+          ].filter(t => t.label.match(/\d+/)[0] !== '0').map(t =>
+            `<button class="${this._wbFilter === t.key ? 'active' : ''}" onclick="App._wbFilter='${t.key}';App.renderWrongBook()">${t.label}</button>`
+          ).join('')}
+        </div>
+        <div class="qgrid-container">
+          ${sorted.map(q => {
+            const mm = m[q.序号];
+            let cls = '';
+            if (mm.wrongStreak >= 3) cls = 'deep-wrong';
+            else cls = 'wrong';
+            return `<div class="qgrid-item ${cls}" onclick="App.startMode('all');App.quizState.idx=App.quizState.questions.findIndex(x=>x.序号===${q.序号});App.nav('quiz')">${q.序号}</div>`;
+          }).join('')}
+        </div>
+        <div class="qgrid-legend">
+          <span><span class="dot" style="background:var(--wrong-dim);border:1px solid var(--wrong)"></span> 错1-2次 ${sorted.filter(q => m[q.序号]?.wrongStreak < 3).length}</span>
+          <span><span class="dot" style="background:rgba(185,28,28,0.3);border:1px solid #b91c1c"></span> 错≥3次 ${sorted.filter(q => m[q.序号]?.wrongStreak >= 3).length}</span>
+        </div>
+      </div>`;
+
+      // 错题列表
+      html += `<h3 style="font-size:14px;margin:12px 0 8px">📋 错题列表（按错误次数排序）</h3>
+      ${sorted.map(q => {
+        const mm = m[q.序号];
         return `<div class="wrong-item" onclick="App.startMode('all');App.quizState.idx=App.quizState.questions.findIndex(x=>x.序号===${q.序号});App.nav('quiz')">
           <span class="wi-num">#${q.序号}</span>
           <span class="wi-title">${q.题目.replace(/<[^>]+>/g,'')}</span>
-          <span class="wi-count">错${m.wrongStreak}次</span>
+          <span class="wi-count">错${mm.wrongStreak}次</span>
         </div>`;
-      }).join('')}
-      `;
+      }).join('')}`;
     } else {
-      html += `<div class="empty" style="padding:30px 20px"><div class="icon">🎉</div><h3>没有错题！</h3></div>`;
+      html += `<div class="empty" style="padding:30px 20px"><div class="icon">🎉</div><h3>没有错题！</h3><p>太棒了，继续保持</p></div>`;
     }
 
     if (starred.length > 0) {
@@ -1742,6 +1960,17 @@ const App = {
   // 考前速览：切题
   reviewJump(idx) {
     this.quizState.idx = idx;
+    this.renderQuiz();
+  },
+
+  // 错题网格切题
+  wrongGridJump(idx) {
+    this.quizState.idx = idx;
+    this.quizState.answered = false;
+    this.quizState.selected = null;
+    this.quizState.isCorrect = false;
+    const nextQ = this.quizState.questions[idx];
+    if (nextQ && nextQ.题型 === '多选') this.quizState.selected = [];
     this.renderQuiz();
   },
 
